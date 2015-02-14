@@ -127,15 +127,24 @@ defmodule Nacelle.Scheduler do
       shard: shard,
       seq: seq,
       leader: leader,
-      remote_read_buffer: tid
+      remote_read_buffer: tid,
     }
 
-    # Do locking...
     # monitor this thing!
     spawn_link fn ->
-      Process.register(self, :"txn.#{seq}.#{tid}")
+      acquire_locks(txn)
 
+      Process.register(self, :"txn.#{seq}.#{tid}")
+      Process.put(:insertions, [])
+
+      # Run the user provided transaction fun
       res = f.(txn)
+
+      # Atomically write all keys
+      case Process.get(:insertions) do
+        [] -> :ok
+        insertions -> GenServer.call(txn.shard, {:put, insertions})
+      end
 
       case other_shards_involved(txn) do
         [] -> :ok
@@ -149,9 +158,17 @@ defmodule Nacelle.Scheduler do
           IO.puts "[#{txn.name}] Awaiting :txn_fin from other schedulers"
 
           Enum.each(shards, fn (s) ->
-            receive do
-              {:txn_fin, ^seq, ^s} -> :ok
-              # Timeout, handle: shardX possibly down
+            # We need to prevent a race condition where the remote node has
+            # confirmed success, but we haven't even registered ourselves yet.
+            # To do so, the sequencer will store all :txn_fin messages into 
+            # its ets table.
+            case :ets.lookup(txn.remote_read_buffer, {:txn_fin, txn.seq, s}) do
+              [] ->
+                receive do
+                  {:txn_fin, ^seq, ^s} -> :ok
+                  # Timeout, handle: shardX possibly down
+                end
+              _  -> :ok
             end
           end)
       end
@@ -167,6 +184,8 @@ defmodule Nacelle.Scheduler do
   end
 
   def handle_cast({:txn_fin, seq, rem_shard}, {shard, tid}) do
+    :ets.insert(tid, {{:txn_fin, seq, rem_shard}})
+
     case Process.whereis(:"txn.#{seq}.#{tid}") do
       nil -> nil
       pid -> send(pid, {:txn_fin, seq, rem_shard})
@@ -228,13 +247,19 @@ defmodule Nacelle.Scheduler do
   def put(txn, key, value) do
     if Enum.member?(txn.key_set, key) do
       if in_shard?(txn, key) do
-        GenServer.call(txn.shard, {:put, key, value})
+        insertions = Process.get(:insertions)
+        Process.put(:insertions, [{key, value} | insertions])
+        :ok
       else
         IO.puts("[#{txn.name}] Ignoring put as it belongs to another shard")
       end
     else
       raise "[#{txn.name}] Attempting to put key not in key_set: #{key}"
     end
+  end
+
+  def acquire_locks(txn) do
+    Nacelle.LockManager.acquire_locks(self, txn.key_set)
   end
 
   defp in_shard?(txn, key) do
@@ -272,6 +297,10 @@ defmodule Nacelle.Shard do
 
   def handle_call({:put, key, value}, _from, store) do
     {:reply, :ok, Dict.put(store, key, value)}
+  end
+
+  def handle_call({:put, key_value_list}, _from, store) do
+    {:reply, :ok, Dict.merge(store, key_value_list)}
   end
 
   def handle_call(:clear, _from, store) do
@@ -319,3 +348,14 @@ end
 #   {1, :foo, :bar},
 #   {2, :qux, :baz}
 # ]
+
+
+
+
+
+[
+  {1, [:foo, :bar], pid},
+  {2, [:baz], pid}
+  {3, [:bar, :buz], pid}
+]
+

@@ -64,4 +64,34 @@ defmodule NacelleTest do
 
     assert Process.info(self)[:message_queue_len] == 0
   end
+
+  test "force race condition that requires locks" do
+    Nacelle.put(:bar, :bar_val)
+    Nacelle.put(:zoo, :zoo_val)
+
+    outer = self
+
+    pid = spawn fn ->
+      Nacelle.transaction [:zoo], fn (txn) ->
+        send(outer, :inner_started)
+
+        :timer.sleep(100)
+        Nacelle.put(txn, :zoo, :zoo_val2)
+      end
+
+      send(outer, :inner_done)
+    end
+
+    receive do
+      :inner_started -> :ok
+    end
+
+    assert {:atomic, [:bar_val, :zoo_val2]} == Nacelle.transaction [:bar, :zoo], fn (txn) ->
+      [Nacelle.get(txn, :bar), Nacelle.get(txn, :zoo)]
+    end
+
+    receive do
+      :inner_done -> :ok
+    end
+  end
 end
