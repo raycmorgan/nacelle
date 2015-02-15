@@ -190,4 +190,29 @@ defmodule NacelleTest do
 
     assert out == [:pid3, :pid1, :pid2]
   end
+
+  test "aborting a transaction" do
+    Nacelle.put(:bar, :bar_val)
+    
+    assert :abort == Nacelle.transaction [:bar], fn (txn) ->
+      Nacelle.put(txn, :bar, :bar_val2)
+      Nacelle.abort(txn)
+    end
+
+    assert {:atomic, :bar_val} == Nacelle.get(:bar)
+  end
+
+  test "aborting a multi-shard transaction" do
+    Nacelle.put(:bar, :bar_val)
+    Nacelle.put(:zoo, :zoo_val)
+    
+    assert :abort == Nacelle.transaction [:bar, :zoo], fn (txn) ->
+      Nacelle.put(txn, :bar, :bar_val2)
+      Nacelle.put(txn, :zoo, :zoo_val2)
+      Nacelle.abort(txn)
+    end
+
+    assert {:atomic, :bar_val} == Nacelle.get(:bar)
+    assert {:atomic, :zoo_val} == Nacelle.get(:zoo)
+  end
 end

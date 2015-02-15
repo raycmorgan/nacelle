@@ -42,12 +42,12 @@ defmodule Nacelle.Scheduler do
     {:noreply, state}
   end
 
-  def handle_cast({:txn_fin, seq, rem_shard}, %State{shard: shard, tid: tid} = state) do
-    :ets.insert(tid, {{:txn_fin, seq, rem_shard}})
+  def handle_cast({:txn_result, result, seq, rem_shard}, %State{shard: shard, tid: tid} = state) do
+    :ets.insert(tid, {{:txn_result, seq, rem_shard}, result})
 
     case Process.whereis(:"txn.#{seq}.#{tid}") do
       nil -> nil
-      pid -> send(pid, {:txn_fin, seq, rem_shard})
+      pid -> send(pid, {:txn_result, result, seq, rem_shard})
     end
 
     {:noreply, state}

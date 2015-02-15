@@ -12,49 +12,18 @@ defmodule Nacelle.Transaction do
       Process.register(self, :"txn.#{txn.seq}.#{txn.remote_read_buffer}")
       Process.put(:insertions, [])
 
+      abort_ref = make_ref
+
       # Run the user provided transaction fun
-      res = txn.f.(txn)
-
-      # Atomically write all keys
-      case Process.get(:insertions) do
-        [] -> :ok
-        insertions -> GenServer.call(txn.shard, {:put, insertions})
+      res = try do
+        txn.f.(txn)
+      rescue
+        e -> abort_ref
       end
 
-      case other_shards_involved(txn) do
-        [] -> :ok
-        shards ->
-          Logger.debug "[#{txn.name}] Sending :txn_fin to other schedulers"
-
-          Enum.each(shards_to_schedulers(shards), fn (s) ->
-            GenServer.cast(s, {:txn_fin, txn.seq, txn.shard})
-          end)
-
-          Logger.debug "[#{txn.name}] Awaiting :txn_fin from other schedulers"
-
-          Enum.each(shards, fn (s) ->
-            # We need to prevent a race condition where the remote node has
-            # confirmed success, but we haven't even registered ourselves yet.
-            # To do so, the sequencer will store all :txn_fin messages into 
-            # its ets table.
-            seq = txn.seq
-
-            case :ets.lookup(txn.remote_read_buffer, {:txn_fin, txn.seq, s}) do
-              [] ->
-                receive do
-                  {:txn_fin, ^seq, ^s} -> :ok
-                  # Timeout, handle: shardX possibly down
-                end
-              _  -> :ok
-            end
-          end)
-      end
-
-      Logger.debug "[#{txn.name}] Transaction committed."
-
+      if res != abort_ref && commit_all_shards(txn), do: do_commit(txn, res), else: do_abort(txn)
+      
       Nacelle.LockManager.release_locks(txn.lock_manager, txn.name)
-
-      if txn.leader, do: GenServer.reply(txn.from, {:atomic, res})
     end
   end
 
@@ -113,7 +82,82 @@ defmodule Nacelle.Transaction do
     end
   end
 
+  def abort(txn, key) do
+    raise "[#{txn.name}] Was aborted by user."
+  end
+
   # --- Private ---
+
+  defp commit_all_shards(txn) do
+    broadcast_commit(txn)
+
+    case other_shards_involved(txn) do
+      [] -> true
+      shards ->
+        # Wait for reply from other schedulers
+        Logger.debug "[#{txn.name}] Awaiting :txn_result from other schedulers"
+
+        Enum.all?(shards, fn (s) ->
+          # We need to prevent a race condition where the remote node has
+          # confirmed success, but we haven't even registered ourselves yet.
+          # To do so, the sequencer will store all :txn_result messages into 
+          # its ets table.
+          seq = txn.seq
+
+          case :ets.lookup(txn.remote_read_buffer, {:txn_result, txn.seq, s}) do
+            [] ->
+              receive do
+                {:txn_result, :atomic, ^seq, ^s} -> true
+                {:txn_result, :abort, ^seq, ^s} -> false
+                # Timeout, handle: shardX possibly down
+              end
+            [{_, :atomic}] -> true
+            [{_, :abort}] -> false
+          end
+        end)
+    end
+  end
+
+  defp broadcast_commit(txn) do
+    Logger.debug "[#{txn.name}] Sending :txn_result to other schedulers"
+
+    case other_shards_involved(txn) do
+      [] -> :ok
+      shards ->
+        Enum.each(shards_to_schedulers(shards), fn (s) ->
+          GenServer.cast(s, {:txn_result, :atomic, txn.seq, txn.shard})
+        end)
+    end
+  end
+
+  defp broadcast_abort(txn, shards) do
+    Logger.debug "[#{txn.name}] Sending :txn_result to other schedulers"
+
+    case other_shards_involved(txn) do
+      [] -> :ok
+      shards ->
+        Enum.each(shards_to_schedulers(shards), fn (s) ->
+          GenServer.cast(s, {:txn_result, :abort, txn.seq, txn.shard})
+        end)
+    end
+  end
+
+  defp do_commit(txn, res) do
+    Logger.debug "[#{txn.name}] Transaction committed."
+
+    # Atomically write all keys
+    case Process.get(:insertions) do
+      [] -> :ok
+      insertions -> GenServer.call(txn.shard, {:put, insertions})
+    end
+
+    if txn.leader, do: GenServer.reply(txn.from, {:atomic, res})
+  end
+
+  defp do_abort(txn) do
+    Logger.debug "[#{txn.name}] Transaction aborted."
+    if txn.leader, do: GenServer.reply(txn.from, :abort)
+  end
 
   defp in_shard?(txn, key) do
     txn.shard == shard_for_key(key)

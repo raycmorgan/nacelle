@@ -69,6 +69,10 @@ defmodule Nacelle do
     Nacelle.Transaction.get(txn, key)
   end
 
+  def abort(txn, key) do
+    Nacelle.Transaction.abort(txn, key)
+  end
+
   # def get_range(txn, {s, e}, opts) do
   # end
 end
