@@ -11,8 +11,8 @@ defmodule Nacelle do
       # worker(Nacelle.Worker, [arg1, arg2, arg3])
     ]
 
-    {:ok, shard1} = GenServer.start_link(Nacelle.Shard, [], name: :shard1)
-    {:ok, shard2} = GenServer.start_link(Nacelle.Shard, [], name: :shard2)
+    {:ok, shard1} = GenServer.start_link(Nacelle.Shard, [:shard1], name: :shard1)
+    {:ok, shard2} = GenServer.start_link(Nacelle.Shard, [:shard2], name: :shard2)
 
     :pg2.create(:shards)
     :ok = :pg2.join(:shards, shard1)
@@ -33,16 +33,15 @@ defmodule Nacelle do
     Supervisor.start_link(children, opts)
   end
 
-  def transaction(f) when is_function(f) do
+  def transaction(f) do
     GenServer.call(:sequencer, {:txn, nil, f})
   end
 
-  def transaction(name, args) when is_atom(name) do
-  end
+  # def transaction(key_set, module, name, args) when is_atom(name) do
+  # end
 
   def transaction(key_set, f) when is_list(key_set) and
-                                   length(key_set) > 0 and
-                                   is_function(f) do
+                                   length(key_set) > 0 do
     GenServer.call(:sequencer, {:txn, key_set, f})
   end
 
@@ -50,26 +49,34 @@ defmodule Nacelle do
   end
 
   def put(key, value) do
-    Nacelle.transaction [key], fn (txn) ->
-      Nacelle.Transaction.put(txn, key, value)
-    end
+    Nacelle.transaction([key], {Nacelle.Proc, :put, [key, value]})
+  end
+
+  def put(key_values) do
+    Nacelle.transaction(Dict.keys(key_values), {Nacelle.Proc, :put, [key_values]})
   end
 
   def get(key) do
-    Nacelle.transaction [key], fn (txn) ->
-      Nacelle.Transaction.get(txn, key)
-    end
+    Nacelle.transaction([key], {Nacelle.Proc, :get, [key]})
   end
 
-  def put(txn, key, value) do
+  def put(%Nacelle.Transaction{} = txn, key, value) do
     Nacelle.Transaction.put(txn, key, value)
   end
 
-  def get(txn, key) do
+  def put(%Nacelle.ReconTransaction{} = txn, key, value) do
+    Nacelle.ReconTransaction.put(txn, key, value)
+  end
+
+  def get(%Nacelle.Transaction{} = txn, key) do
     Nacelle.Transaction.get(txn, key)
   end
 
-  def abort(txn, key) do
+  def get(%Nacelle.ReconTransaction{} = txn, key) do
+    Nacelle.ReconTransaction.get(txn, key)
+  end
+
+  def abort(%Nacelle.Transaction{} = txn, key) do
     Nacelle.Transaction.abort(txn, key)
   end
 

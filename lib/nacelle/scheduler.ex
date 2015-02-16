@@ -17,7 +17,7 @@ defmodule Nacelle.Scheduler do
     {:ok, state}
   end
 
-  def handle_cast({:txn, key_set, f, seq, from, leader}, state) do
+  def handle_cast({:txn, key_set, f, seq, from, leader, was_recon}, state) do
     %State{shard: shard, tid: tid, lock_manager: lock_manager} = state
 
     txn = %Nacelle.Transaction{
@@ -29,7 +29,8 @@ defmodule Nacelle.Scheduler do
       remote_read_buffer: tid,
       lock_manager: lock_manager,
       f: f,
-      from: from
+      from: from,
+      was_recon: was_recon
     }
 
     # Sending this from the scheduler process is important since
@@ -62,5 +63,13 @@ defmodule Nacelle.Scheduler do
     end
 
     {:noreply, state}
+  end
+
+  def scheduler_for_key(key) when is_number(key) do
+    if to_string(key) < "5", do: :scheduler1, else: :scheduler2
+  end
+
+  def scheduler_for_key(key) do
+    if to_string(key) < "m", do: :scheduler1, else: :scheduler2
   end
 end

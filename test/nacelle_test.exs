@@ -215,4 +215,57 @@ defmodule NacelleTest do
     assert {:atomic, :bar_val} == Nacelle.get(:bar)
     assert {:atomic, :zoo_val} == Nacelle.get(:zoo)
   end
+
+  test "reading after put in same txn reads put" do
+    Nacelle.put(:foo, :hello)
+    assert {:atomic, :foo_val} == Nacelle.transaction [:foo], fn (txn)->
+      Nacelle.put(txn, :foo, :foo_val)
+      Nacelle.get(txn, :foo)
+    end
+  end
+
+  test "recons txns with no key_set" do
+    Nacelle.put(:foo, :foo_val)
+    assert {:atomic, :foo_val} == Nacelle.transaction fn (txn) ->
+      Nacelle.get(txn, :foo)
+    end
+  end
+
+  test "recons with get and put" do
+    Nacelle.put(:foo, 2)
+
+    assert {:atomic, 4} == Nacelle.transaction fn (txn) ->
+      val = Nacelle.get(txn, :foo)
+      Nacelle.put(txn, :bar, val + 2)
+      val + 2
+    end
+  end
+
+  test "recons retry when key_set is out of date" do
+    Nacelle.put(:foo, :bar)
+    Nacelle.put(:bar, 5)
+    Nacelle.put(:baz, 8)
+
+    outer = self
+
+    t = Task.async fn ->
+      Nacelle.transaction fn (txn) ->
+        other_key = Nacelle.get(txn, :foo)
+        val = Nacelle.get(txn, other_key)
+
+        if txn.is_recon do
+          send(outer, :first_done)
+          :timer.sleep(10)
+        end
+
+        val
+      end
+    end
+
+    receive do :first_done -> :ok end
+
+    Nacelle.put(:foo, :baz)
+
+    assert {:atomic, 8} == Task.await(t)
+  end
 end

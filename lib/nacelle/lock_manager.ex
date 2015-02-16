@@ -75,7 +75,7 @@ defmodule Nacelle.LockManager do
                            running_txns: Dict.put(state.running_txns, txn_name, record)}
           else
             if record.from do
-              Logger.debug "[#{record.name}] Attempted to acquire #{inspect(record.locks)} but already held #{inspect(state.locks_held)}"
+              Logger.warn "[#{record.name}] Attempted to acquire #{inspect(record.locks)} but already held #{inspect(state.locks_held)}"
             else
               Logger.debug "[#{record.name}] Skipped attempt since don't have reply pid yet. #{inspect(record.locks)}"
             end

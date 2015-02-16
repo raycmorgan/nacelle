@@ -2,7 +2,8 @@ defmodule Nacelle.Transaction do
   require Logger
 
   defstruct name: nil, key_set: nil, shard: nil, seq: 0, leader: false,
-            remote_read_buffer: nil, lock_manager: nil, f: nil, from: nil
+            remote_read_buffer: nil, lock_manager: nil, f: nil, from: nil,
+            is_recon: false, was_recon: false
 
   def start_link(txn) do
     spawn_link fn ->
@@ -16,7 +17,10 @@ defmodule Nacelle.Transaction do
 
       # Run the user provided transaction fun
       res = try do
-        txn.f.(txn)
+        case txn.f do
+          {m, f, a} -> apply(m, f, [txn | a]) 
+          f -> f.(txn)
+        end
       rescue
         e -> abort_ref
       end
@@ -30,7 +34,13 @@ defmodule Nacelle.Transaction do
   def get(txn, key) do
     if Enum.member?(txn.key_set, key) do
       if in_shard?(txn, key) do
-        val = GenServer.call(txn.shard, {:get, key})
+        insertions = Process.get(:insertions)
+
+        val = if Dict.has_key?(insertions, key) do
+          insertions[key]
+        else
+          GenServer.call(txn.shard, {:get, key})
+        end
 
         case other_shards_involved(txn) do
           [] -> nil
@@ -156,19 +166,23 @@ defmodule Nacelle.Transaction do
 
   defp do_abort(txn) do
     Logger.debug "[#{txn.name}] Transaction aborted."
-    if txn.leader, do: GenServer.reply(txn.from, :abort)
+
+    if txn.leader do
+      if txn.was_recon do
+        # TODO: remove hardcode
+        GenServer.cast(:sequencer, {:txn_retry, txn.f, txn.from})
+      else
+        GenServer.reply(txn.from, :abort)
+      end
+    end
   end
 
   defp in_shard?(txn, key) do
-    txn.shard == shard_for_key(key)
-  end
-
-  defp shard_for_key(key) do
-    if to_string(key) < "m", do: :shard1, else: :shard2
+    txn.shard == Nacelle.Shard.shard_for_key(key)
   end
 
   defp other_shards_involved(txn) do
-    Enum.map(txn.key_set, &shard_for_key(&1))
+    Enum.map(txn.key_set, &Nacelle.Shard.shard_for_key(&1))
     |> Enum.uniq
     |> Enum.reject(fn (shard) -> shard == txn.shard end)
   end
@@ -178,5 +192,25 @@ defmodule Nacelle.Transaction do
       (:shard1) -> :scheduler1
       (:shard2) -> :scheduler2
     end)
+  end
+end
+
+defmodule Nacelle.Proc do
+  def get(txn, keys) when is_list(keys) do
+    Enum.map keys, &Nacelle.Transaction.get(txn, &1)
+  end
+
+  def get(txn, key) do
+    Nacelle.Transaction.get(txn, key)
+  end
+
+  def put(txn, kvs) do
+    Enum.map kvs, fn ({k, v}) ->
+      Nacelle.Transaction.put(txn, k, v)
+    end
+  end
+
+  def put(txn, key, value) do
+    Nacelle.Transaction.put(txn, key, value)
   end
 end
