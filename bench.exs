@@ -7,8 +7,8 @@ ops = 10_000
 
 {time, val} = :timer.tc fn ->
   Enum.each 1..ops, fn (n) ->
-    # key = :random.uniform 10_000
-    # Nacelle.put(key, n)
+    key = :random.uniform 10_000
+    Nacelle.put(key, n)
 
     # Nacelle.transaction [key], fn (txn) ->
     #   Nacelle.put(txn, key, n)
@@ -29,6 +29,8 @@ ops = 10_000
 end
 
 random_gen_time = 110 * ops
+IO.puts inspect(time)
+
 
 real_time = time - random_gen_time
 

@@ -26,7 +26,7 @@ defmodule Nacelle.Transaction do
       end
 
       if res != abort_ref && commit_all_shards(txn), do: do_commit(txn, res), else: do_abort(txn)
-      
+
       Nacelle.LockManager.release_locks(txn.lock_manager, txn.name)
     end
   end
